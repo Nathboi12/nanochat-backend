@@ -16,11 +16,50 @@ const liveRoutes = require('./routes/live');
 
 const app = express();
 
-app.use(cors());
+// --- CORS: explicit allowlist instead of a bare wildcard ---
+// Add any other frontend URLs here (comma-separated) via the CLIENT_ORIGIN env var,
+// e.g. CLIENT_ORIGIN=https://nathboi12.github.io,http://localhost:5500
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'https://nathboi12.github.io')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // no Origin header = same-origin/non-browser request (curl, health checks, etc.) — allow
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+
 app.use(express.json({ limit: '2mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// --- Very simple in-memory rate limiter for auth endpoints ---
+// Limits repeated signup/login attempts per IP. Resets every window.
+const rateLimitBuckets = new Map();
+function rateLimit({ windowMs = 15 * 60 * 1000, max = 20 } = {}) {
+  return (req, res, next) => {
+    const key = req.ip + ':' + req.path;
+    const now = Date.now();
+    const bucket = rateLimitBuckets.get(key);
+    if (!bucket || now > bucket.resetAt) {
+      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (bucket.count >= max) {
+      return res.status(429).json({ error: 'Too many attempts. Please wait a bit and try again.' });
+    }
+    bucket.count++;
+    next();
+  };
+}
+
 app.get('/health', (req, res) => res.json({ ok: true, service: 'nanochat-backend' }));
+
+app.use('/auth/signup', rateLimit({ max: 10 }));
+app.use('/auth/login', rateLimit({ max: 20 }));
 
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
@@ -32,6 +71,9 @@ app.use('/live', liveRoutes);
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, next) => {
   console.error(err);
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ error: 'This origin is not allowed to access the API.' });
+  }
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
