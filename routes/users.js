@@ -1,4 +1,5 @@
-const express = require('express');
+
+    const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const { nanoid } = require('nanoid');
@@ -16,7 +17,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image files are allowed'));
     cb(null, true);
@@ -36,6 +37,7 @@ function publicUser(u) {
   };
 }
 
+// Update own profile (name / bio / website)
 router.patch('/me', requireAuth, (req, res) => {
   const { name, bio, website } = req.body;
   const current = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
@@ -49,6 +51,7 @@ router.patch('/me', requireAuth, (req, res) => {
   res.json({ user: publicUser(updated) });
 });
 
+// Upload / replace avatar
 router.post('/me/avatar', requireAuth, upload.single('avatar'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image file uploaded (field name: avatar)' });
   const avatarUrl = `/uploads/${req.file.filename}`;
@@ -56,6 +59,16 @@ router.post('/me/avatar', requireAuth, upload.single('avatar'), (req, res) => {
   res.json({ avatarUrl });
 });
 
+// Get own full profile (includes own follower/following counts)
+router.get('/me', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const followers = db.prepare('SELECT COUNT(*) c FROM follows WHERE followee_id = ?').get(req.userId).c;
+  const following = db.prepare('SELECT COUNT(*) c FROM follows WHERE follower_id = ?').get(req.userId).c;
+  res.json({ user: { ...publicUser(user), followers, following } });
+});
+
+// Public profile lookup
 router.get('/:id', (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -64,6 +77,7 @@ router.get('/:id', (req, res) => {
   res.json({ user: { ...publicUser(user), followers, following } });
 });
 
+// Follow / unfollow
 router.post('/:id/follow', requireAuth, (req, res) => {
   if (req.params.id === req.userId) return res.status(400).json({ error: "You can't follow yourself" });
   db.prepare('INSERT OR IGNORE INTO follows (follower_id, followee_id) VALUES (?, ?)').run(req.userId, req.params.id);
@@ -74,6 +88,7 @@ router.delete('/:id/follow', requireAuth, (req, res) => {
   res.json({ following: false });
 });
 
+// Simple search by name
 router.get('/', (req, res) => {
   const q = (req.query.q || '').toLowerCase();
   const rows = db
