@@ -1,4 +1,7 @@
-const express = require('express');
+
+  const express = require('express');
+const multer = require('multer');
+const path = require('path');
 const { nanoid } = require('nanoid');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -16,6 +19,27 @@ router.use((req, res, next) => {
     } catch (_) {}
   }
   next();
+});
+
+// --- Media upload (for stories/post images) ---
+const mediaStorage = multer.diskStorage({
+  destination: path.join(__dirname, '..', 'uploads'),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, `${nanoid()}${ext}`);
+  },
+});
+const uploadMedia = multer({
+  storage: mediaStorage,
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image files are allowed'));
+    cb(null, true);
+  },
+});
+router.post('/media', requireAuth, uploadMedia.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image file uploaded (field name: file)' });
+  res.status(201).json({ url: `/uploads/${req.file.filename}` });
 });
 
 function serializePost(row, userId) {
@@ -49,7 +73,7 @@ function serializePost(row, userId) {
 // GET /posts?mode=goal|normal  — main feed
 router.get('/', (req, res) => {
   const mode = req.query.mode === 'normal' ? 'normal' : 'goal';
-  const userId = req.userId;
+  const userId = req.userId; // optional, set below if token present
   const rows = db
     .prepare(
       `SELECT p.*, u.name, u.avatar_url
