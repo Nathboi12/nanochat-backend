@@ -26,6 +26,9 @@ router.post('/signup', (req, res) => {
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email, and password are required' });
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address' });
+  }
   if (password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters' });
   }
@@ -62,3 +65,5 @@ router.get('/me', requireAuth, (req, res) => {
 });
 
 module.exports = router;
+
+  
