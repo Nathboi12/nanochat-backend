@@ -8,6 +8,8 @@ const { requireAuth } = require('../middleware/auth');
 const router = express.Router();
 
 function publicUser(u) {
+  const followers = db.prepare('SELECT COUNT(*) c FROM follows WHERE followee_id = ?').get(u.id).c;
+  const following = db.prepare('SELECT COUNT(*) c FROM follows WHERE follower_id = ?').get(u.id).c;
   return {
     id: u.id,
     name: u.name,
@@ -18,6 +20,8 @@ function publicUser(u) {
     goalStreak: u.goal_streak,
     normalStreak: u.normal_streak,
     score: u.score,
+    followers,
+    following,
   };
 }
 
@@ -65,5 +69,3 @@ router.get('/me', requireAuth, (req, res) => {
 });
 
 module.exports = router;
-
-  
