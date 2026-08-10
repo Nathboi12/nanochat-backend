@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { initSchema } = require('./db');
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -70,12 +71,24 @@ app.use('/live', liveRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, next) => {
-  console.error(err);
+  console.error(err); // full technical detail stays in the server logs for debugging
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'This origin is not allowed to access the API.' });
+  }
+  if (err.code && /^[0-9]{5}$/.test(err.code)) {
+    // Postgres error codes are 5-digit SQLSTATE codes (e.g. 23503 = FK violation). Never leak raw SQL errors.
+    return res.status(500).json({ error: 'Something went wrong saving that. Please try again.' });
   }
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Nanochat backend listening on port ${PORT}`));
+
+initSchema()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Nanochat backend listening on port ${PORT}`));
+  })
+  .catch(err => {
+    console.error('FATAL: could not initialize database schema.', err);
+    process.exit(1);
+  });
