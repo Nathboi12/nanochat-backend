@@ -3,25 +3,22 @@
 const multer = require('multer');
 const path = require('path');
 const { nanoid } = require('nanoid');
-const db = require('../db');
+const jwt = require('jsonwebtoken');
+const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Optional-auth middleware to know if the requester liked posts, without requiring login
+// Optional-auth: know if the requester liked posts, without requiring login for GET /
 router.use((req, res, next) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (token) {
-    try {
-      const jwt = require('jsonwebtoken');
-      req.userId = jwt.verify(token, process.env.JWT_SECRET).sub;
-    } catch (_) {}
+    try { req.userId = jwt.verify(token, process.env.JWT_SECRET).sub; } catch (_) {}
   }
   next();
 });
 
-// --- Media upload (for stories/post images) ---
 const mediaStorage = multer.diskStorage({
   destination: path.join(__dirname, '..', 'uploads'),
   filename: (req, file, cb) => {
@@ -31,7 +28,7 @@ const mediaStorage = multer.diskStorage({
 });
 const uploadMedia = multer({
   storage: mediaStorage,
-  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+  limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image files are allowed'));
     cb(null, true);
@@ -42,20 +39,19 @@ router.post('/media', requireAuth, uploadMedia.single('file'), (req, res) => {
   res.status(201).json({ url: `/uploads/${req.file.filename}` });
 });
 
-function serializePost(row, userId) {
-  const likeCount = db.prepare('SELECT COUNT(*) c FROM likes WHERE post_id = ?').get(row.id).c;
-  const liked = userId
-    ? !!db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND user_id = ?').get(row.id, userId)
-    : false;
-  const comments = db
-    .prepare(
-      `SELECT c.id, c.text, c.created_at, u.id as user_id, u.name, u.avatar_url
-       FROM comments c JOIN users u ON u.id = c.user_id
-       WHERE c.post_id = ? ORDER BY c.created_at ASC`
-    )
-    .all(row.id)
-    .map(c => ({ id: c.id, text: c.text, createdAt: c.created_at, author: { id: c.user_id, name: c.name, avatarUrl: c.avatar_url } }));
-
+async function serializePost(row, userId) {
+  const likeCountRes = await query('SELECT COUNT(*) c FROM likes WHERE post_id = $1', [row.id]);
+  let liked = false;
+  if (userId) {
+    const likedRes = await query('SELECT 1 FROM likes WHERE post_id = $1 AND user_id = $2', [row.id, userId]);
+    liked = !!likedRes.rows[0];
+  }
+  const commentsRes = await query(
+    `SELECT c.id, c.text, c.created_at, u.id as user_id, u.name, u.avatar_url
+     FROM comments c JOIN users u ON u.id = c.user_id
+     WHERE c.post_id = $1 ORDER BY c.created_at ASC`,
+    [row.id]
+  );
   return {
     id: row.id,
     body: row.body,
@@ -63,98 +59,100 @@ function serializePost(row, userId) {
     profileMode: row.profile_mode,
     categoryId: row.category_id,
     createdAt: row.created_at,
-    likeCount,
+    likeCount: Number(likeCountRes.rows[0].c),
     liked,
-    comments,
+    comments: commentsRes.rows.map(c => ({ id: c.id, text: c.text, createdAt: c.created_at, author: { id: c.user_id, name: c.name, avatarUrl: c.avatar_url } })),
     author: { id: row.user_id, name: row.name, avatarUrl: row.avatar_url },
   };
 }
 
-// GET /posts?mode=goal|normal  — main feed
-router.get('/', (req, res) => {
-  const mode = req.query.mode === 'normal' ? 'normal' : 'goal';
-  const userId = req.userId; // optional, set below if token present
-  const rows = db
-    .prepare(
-      `SELECT p.*, u.name, u.avatar_url
-       FROM posts p JOIN users u ON u.id = p.user_id
-       WHERE p.profile_mode = ?
-       ORDER BY p.created_at DESC LIMIT 50`
-    )
-    .all(mode);
-  res.json({ posts: rows.map(r => serializePost(r, userId)) });
+router.get('/', async (req, res, next) => {
+  try {
+    const mode = req.query.mode === 'normal' ? 'normal' : 'goal';
+    const { rows } = await query(
+      `SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id
+       WHERE p.profile_mode = $1 ORDER BY p.created_at DESC LIMIT 50`,
+      [mode]
+    );
+    const posts = [];
+    for (const row of rows) posts.push(await serializePost(row, req.userId));
+    res.json({ posts });
+  } catch (err) { next(err); }
 });
 
-router.post('/', requireAuth, (req, res) => {
-  const { body, profileMode, categoryId, mediaUrl } = req.body;
-  if (!body || !profileMode) return res.status(400).json({ error: 'body and profileMode are required' });
-  if (!['goal', 'normal'].includes(profileMode)) return res.status(400).json({ error: 'profileMode must be goal or normal' });
+router.post('/', requireAuth, async (req, res, next) => {
+  try {
+    const { body, profileMode, categoryId, mediaUrl } = req.body;
+    if (!body || !profileMode) return res.status(400).json({ error: 'body and profileMode are required' });
+    if (!['goal', 'normal'].includes(profileMode)) return res.status(400).json({ error: 'profileMode must be goal or normal' });
 
-  const id = nanoid();
-  db.prepare(
-    'INSERT INTO posts (id, user_id, profile_mode, category_id, body, media_url) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, req.userId, profileMode, categoryId || null, body, mediaUrl || null);
-
-  const row = db
-    .prepare(`SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?`)
-    .get(id);
-  res.status(201).json({ post: serializePost(row, req.userId) });
+    const id = nanoid();
+    await query(
+      'INSERT INTO posts (id, user_id, profile_mode, category_id, body, media_url) VALUES ($1, $2, $3, $4, $5, $6)',
+      [id, req.userId, profileMode, categoryId || null, body, mediaUrl || null]
+    );
+    const { rows } = await query(`SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, [id]);
+    res.status(201).json({ post: await serializePost(rows[0], req.userId) });
+  } catch (err) { next(err); }
 });
 
-router.delete('/:id', requireAuth, (req, res) => {
-  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
-  if (!post) return res.status(404).json({ error: 'Post not found' });
-  if (post.user_id !== req.userId) return res.status(403).json({ error: 'Not your post' });
-  db.prepare('DELETE FROM posts WHERE id = ?').run(req.params.id);
-  res.status(204).end();
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query('SELECT * FROM posts WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Post not found' });
+    if (rows[0].user_id !== req.userId) return res.status(403).json({ error: 'Not your post' });
+    await query('DELETE FROM posts WHERE id = $1', [req.params.id]);
+    res.status(204).end();
+  } catch (err) { next(err); }
 });
 
-router.post('/:id/like', requireAuth, (req, res) => {
-  db.prepare('INSERT OR IGNORE INTO likes (post_id, user_id) VALUES (?, ?)').run(req.params.id, req.userId);
-  res.json({ liked: true });
+router.post('/:id/like', requireAuth, async (req, res, next) => {
+  try {
+    await query('INSERT INTO likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, req.userId]);
+    res.json({ liked: true });
+  } catch (err) { next(err); }
 });
-router.delete('/:id/like', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM likes WHERE post_id = ? AND user_id = ?').run(req.params.id, req.userId);
-  res.json({ liked: false });
+router.delete('/:id/like', requireAuth, async (req, res, next) => {
+  try {
+    await query('DELETE FROM likes WHERE post_id = $1 AND user_id = $2', [req.params.id, req.userId]);
+    res.json({ liked: false });
+  } catch (err) { next(err); }
 });
 
-router.post('/:id/comments', requireAuth, (req, res) => {
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'text is required' });
-  const id = nanoid();
-  db.prepare('INSERT INTO comments (id, post_id, user_id, text) VALUES (?, ?, ?, ?)').run(id, req.params.id, req.userId, text);
-  const c = db
-    .prepare(
+router.post('/:id/comments', requireAuth, async (req, res, next) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'text is required' });
+    const id = nanoid();
+    await query('INSERT INTO comments (id, post_id, user_id, text) VALUES ($1, $2, $3, $4)', [id, req.params.id, req.userId, text]);
+    const { rows } = await query(
       `SELECT c.id, c.text, c.created_at, u.id as user_id, u.name, u.avatar_url
-       FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?`
-    )
-    .get(id);
-  res.status(201).json({
-    comment: { id: c.id, text: c.text, createdAt: c.created_at, author: { id: c.user_id, name: c.name, avatarUrl: c.avatar_url } },
-  });
+       FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = $1`,
+      [id]
+    );
+    const c = rows[0];
+    res.status(201).json({ comment: { id: c.id, text: c.text, createdAt: c.created_at, author: { id: c.user_id, name: c.name, avatarUrl: c.avatar_url } } });
+  } catch (err) { next(err); }
 });
 
-// ---- Stories ----
-router.get('/stories/feed', (req, res) => {
-  const rows = db
-    .prepare(
+router.get('/stories/feed', async (req, res, next) => {
+  try {
+    const { rows } = await query(
       `SELECT s.id, s.media_url, s.created_at, u.id as user_id, u.name, u.avatar_url
        FROM stories s JOIN users u ON u.id = s.user_id
-       WHERE s.expires_at IS NULL OR s.expires_at > datetime('now')
+       WHERE s.expires_at IS NULL OR s.expires_at > NOW()
        ORDER BY s.created_at DESC LIMIT 30`
-    )
-    .all();
-  res.json({
-    stories: rows.map(r => ({ id: r.id, mediaUrl: r.media_url, createdAt: r.created_at, author: { id: r.user_id, name: r.name, avatarUrl: r.avatar_url } })),
-  });
+    );
+    res.json({ stories: rows.map(r => ({ id: r.id, mediaUrl: r.media_url, createdAt: r.created_at, author: { id: r.user_id, name: r.name, avatarUrl: r.avatar_url } })) });
+  } catch (err) { next(err); }
 });
-router.post('/stories', requireAuth, (req, res) => {
-  const { mediaUrl } = req.body;
-  const id = nanoid();
-  db.prepare("INSERT INTO stories (id, user_id, media_url, expires_at) VALUES (?, ?, ?, datetime('now', '+24 hours'))").run(
-    id, req.userId, mediaUrl || null
-  );
-  res.status(201).json({ id });
+router.post('/stories', requireAuth, async (req, res, next) => {
+  try {
+    const { mediaUrl } = req.body;
+    const id = nanoid();
+    await query("INSERT INTO stories (id, user_id, media_url, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')", [id, req.userId, mediaUrl || null]);
+    res.status(201).json({ id });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;
