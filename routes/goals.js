@@ -1,119 +1,144 @@
 const express = require('express');
 const { nanoid } = require('nanoid');
-const db = require('../db');
+const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-router.get('/categories', (req, res) => {
-  res.json({ categories: db.prepare('SELECT * FROM goal_categories').all() });
+router.get('/categories', async (req, res, next) => {
+  try {
+    const { rows } = await query('SELECT * FROM goal_categories');
+    res.json({ categories: rows });
+  } catch (err) { next(err); }
 });
 
-function getOrCreateGoal(userId, categoryId) {
-  let goal = db.prepare('SELECT * FROM user_goals WHERE user_id = ? AND category_id = ?').get(userId, categoryId);
-  if (!goal) {
+async function getOrCreateGoal(userId, categoryId) {
+  let { rows } = await query('SELECT * FROM user_goals WHERE user_id = $1 AND category_id = $2', [userId, categoryId]);
+  if (!rows[0]) {
     const id = nanoid();
-    db.prepare('INSERT INTO user_goals (id, user_id, category_id) VALUES (?, ?, ?)').run(id, userId, categoryId);
-    goal = db.prepare('SELECT * FROM user_goals WHERE id = ?').get(id);
+    await query('INSERT INTO user_goals (id, user_id, category_id) VALUES ($1, $2, $3)', [id, userId, categoryId]);
+    ({ rows } = await query('SELECT * FROM user_goals WHERE id = $1', [id]));
   }
-  return goal;
+  return rows[0];
 }
 
-function serializeGoal(goal) {
-  const milestones = db.prepare('SELECT * FROM milestones WHERE goal_id = ? ORDER BY position ASC').all(goal.id);
-  const checkins = db
-    .prepare(
-      `SELECT c.id, c.text, c.created_at, u.name FROM checkins c JOIN users u ON u.id = c.user_id
-       WHERE c.goal_id = ? ORDER BY c.created_at DESC LIMIT 20`
-    )
-    .all(goal.id);
-  const cheerSquad = db
-    .prepare(
-      `SELECT u.id, u.name, u.avatar_url FROM cheer_squad cs JOIN users u ON u.id = cs.member_id WHERE cs.goal_id = ?`
-    )
-    .all(goal.id);
+async function serializeGoal(goal) {
+  const milestonesRes = await query('SELECT * FROM milestones WHERE goal_id = $1 ORDER BY position ASC', [goal.id]);
+  const checkinsRes = await query(
+    `SELECT c.id, c.text, c.created_at, u.name FROM checkins c JOIN users u ON u.id = c.user_id
+     WHERE c.goal_id = $1 ORDER BY c.created_at DESC LIMIT 20`,
+    [goal.id]
+  );
+  const cheerRes = await query(
+    `SELECT u.id, u.name, u.avatar_url FROM cheer_squad cs JOIN users u ON u.id = cs.member_id WHERE cs.goal_id = $1`,
+    [goal.id]
+  );
   return {
     id: goal.id,
     categoryId: goal.category_id,
     progress: goal.progress,
-    milestones: milestones.map(m => ({ id: m.id, label: m.label, done: !!m.done })),
-    checkins: checkins.map(c => ({ id: c.id, text: c.text, who: c.name, createdAt: c.created_at })),
-    cheerSquad: cheerSquad.map(m => ({ id: m.id, name: m.name, avatarUrl: m.avatar_url })),
+    milestones: milestonesRes.rows.map(m => ({ id: m.id, label: m.label, done: !!m.done })),
+    checkins: checkinsRes.rows.map(c => ({ id: c.id, text: c.text, who: c.name, createdAt: c.created_at })),
+    cheerSquad: cheerRes.rows.map(m => ({ id: m.id, name: m.name, avatarUrl: m.avatar_url })),
   };
 }
 
-router.get('/mine/:categoryId', requireAuth, (req, res) => {
-  const goal = getOrCreateGoal(req.userId, req.params.categoryId);
-  res.json({ goal: serializeGoal(goal) });
+router.get('/mine/:categoryId', requireAuth, async (req, res, next) => {
+  try {
+    const goal = await getOrCreateGoal(req.userId, req.params.categoryId);
+    res.json({ goal: await serializeGoal(goal) });
+  } catch (err) { next(err); }
 });
 
-router.get('/mine', requireAuth, (req, res) => {
-  const goals = db.prepare('SELECT * FROM user_goals WHERE user_id = ?').all(req.userId);
-  res.json({ goals: goals.map(serializeGoal) });
+router.get('/mine', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query('SELECT * FROM user_goals WHERE user_id = $1', [req.userId]);
+    const goals = [];
+    for (const g of rows) goals.push(await serializeGoal(g));
+    res.json({ goals });
+  } catch (err) { next(err); }
 });
 
-router.post('/mine/:categoryId/milestones', requireAuth, (req, res) => {
-  const { label } = req.body;
-  if (!label) return res.status(400).json({ error: 'label is required' });
-  const goal = getOrCreateGoal(req.userId, req.params.categoryId);
-  const id = nanoid();
-  const pos = db.prepare('SELECT COUNT(*) c FROM milestones WHERE goal_id = ?').get(goal.id).c;
-  db.prepare('INSERT INTO milestones (id, goal_id, label, position) VALUES (?, ?, ?, ?)').run(id, goal.id, label, pos);
-  res.status(201).json({ goal: serializeGoal(goal) });
+router.post('/mine/:categoryId/milestones', requireAuth, async (req, res, next) => {
+  try {
+    const { label } = req.body;
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    const goal = await getOrCreateGoal(req.userId, req.params.categoryId);
+    const id = nanoid();
+    const posRes = await query('SELECT COUNT(*) c FROM milestones WHERE goal_id = $1', [goal.id]);
+    await query('INSERT INTO milestones (id, goal_id, label, position) VALUES ($1, $2, $3, $4)', [id, goal.id, label, Number(posRes.rows[0].c)]);
+    res.status(201).json({ goal: await serializeGoal(goal) });
+  } catch (err) { next(err); }
 });
 
-function recomputeProgress(goalId) {
-  const milestones = db.prepare('SELECT done FROM milestones WHERE goal_id = ?').all(goalId);
-  if (milestones.length === 0) return;
-  const done = milestones.filter(m => m.done).length;
-  const progress = Math.round((done / milestones.length) * 100);
-  db.prepare('UPDATE user_goals SET progress = ? WHERE id = ?').run(progress, goalId);
+async function recomputeProgress(goalId) {
+  const { rows } = await query('SELECT done FROM milestones WHERE goal_id = $1', [goalId]);
+  if (rows.length === 0) return;
+  const done = rows.filter(m => m.done).length;
+  const progress = Math.round((done / rows.length) * 100);
+  await query('UPDATE user_goals SET progress = $1 WHERE id = $2', [progress, goalId]);
 }
 
-router.patch('/milestones/:id/toggle', requireAuth, (req, res) => {
-  const milestone = db.prepare('SELECT * FROM milestones WHERE id = ?').get(req.params.id);
-  if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
-  const goal = db.prepare('SELECT * FROM user_goals WHERE id = ?').get(milestone.goal_id);
-  if (goal.user_id !== req.userId) return res.status(403).json({ error: 'Not your goal' });
+router.patch('/milestones/:id/toggle', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: mRows } = await query('SELECT * FROM milestones WHERE id = $1', [req.params.id]);
+    const milestone = mRows[0];
+    if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
+    const { rows: gRows } = await query('SELECT * FROM user_goals WHERE id = $1', [milestone.goal_id]);
+    const goal = gRows[0];
+    if (goal.user_id !== req.userId) return res.status(403).json({ error: 'Not your goal' });
 
-  db.prepare('UPDATE milestones SET done = ? WHERE id = ?').run(milestone.done ? 0 : 1, milestone.id);
-  recomputeProgress(goal.id);
+    await query('UPDATE milestones SET done = $1 WHERE id = $2', [milestone.done ? 0 : 1, milestone.id]);
+    await recomputeProgress(goal.id);
 
-  const anyDone = db.prepare('SELECT 1 FROM milestones m JOIN user_goals g ON g.id = m.goal_id WHERE g.user_id = ? AND m.done = 1 LIMIT 1').get(req.userId);
-  if (anyDone) {
-    db.prepare('INSERT OR IGNORE INTO user_badges (user_id, badge_id) VALUES (?, ?)').run(req.userId, 'first_milestone');
-  }
-  res.json({ goal: serializeGoal(db.prepare('SELECT * FROM user_goals WHERE id = ?').get(goal.id)) });
+    const anyDone = await query(
+      'SELECT 1 FROM milestones m JOIN user_goals g ON g.id = m.goal_id WHERE g.user_id = $1 AND m.done = 1 LIMIT 1',
+      [req.userId]
+    );
+    if (anyDone.rows[0]) {
+      await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, 'first_milestone']);
+    }
+    const { rows: freshGoal } = await query('SELECT * FROM user_goals WHERE id = $1', [goal.id]);
+    res.json({ goal: await serializeGoal(freshGoal[0]) });
+  } catch (err) { next(err); }
 });
 
-router.post('/mine/:categoryId/checkins', requireAuth, (req, res) => {
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'text is required' });
-  const goal = getOrCreateGoal(req.userId, req.params.categoryId);
-  const id = nanoid();
-  db.prepare('INSERT INTO checkins (id, goal_id, user_id, text) VALUES (?, ?, ?, ?)').run(id, goal.id, req.userId, text);
+router.post('/mine/:categoryId/checkins', requireAuth, async (req, res, next) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'text is required' });
+    const goal = await getOrCreateGoal(req.userId, req.params.categoryId);
+    const id = nanoid();
+    await query('INSERT INTO checkins (id, goal_id, user_id, text) VALUES ($1, $2, $3, $4)', [id, goal.id, req.userId, text]);
 
-  db.prepare('UPDATE users SET goal_streak = goal_streak + 1 WHERE id = ?').run(req.userId);
-  const streak = db.prepare('SELECT goal_streak FROM users WHERE id = ?').get(req.userId).goal_streak;
-  if (streak >= 12) db.prepare('INSERT OR IGNORE INTO user_badges (user_id, badge_id) VALUES (?, ?)').run(req.userId, 'streak_12');
-  if (streak >= 30) db.prepare('INSERT OR IGNORE INTO user_badges (user_id, badge_id) VALUES (?, ?)').run(req.userId, 'streak_30');
+    await query('UPDATE users SET goal_streak = goal_streak + 1 WHERE id = $1', [req.userId]);
+    const streakRes = await query('SELECT goal_streak FROM users WHERE id = $1', [req.userId]);
+    const streak = streakRes.rows[0].goal_streak;
+    if (streak >= 12) await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, 'streak_12']);
+    if (streak >= 30) await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, 'streak_30']);
 
-  res.status(201).json({ goal: serializeGoal(goal), goalStreak: streak });
+    res.status(201).json({ goal: await serializeGoal(goal), goalStreak: streak });
+  } catch (err) { next(err); }
 });
 
-router.post('/mine/:categoryId/cheer-squad', requireAuth, (req, res) => {
-  const { memberId } = req.body;
-  if (!memberId) return res.status(400).json({ error: 'memberId is required' });
-  const goal = getOrCreateGoal(req.userId, req.params.categoryId);
-  db.prepare('INSERT OR IGNORE INTO cheer_squad (goal_id, member_id) VALUES (?, ?)').run(goal.id, memberId);
-  db.prepare('INSERT OR IGNORE INTO user_badges (user_id, badge_id) VALUES (?, ?)').run(req.userId, 'squad_builder');
-  res.status(201).json({ goal: serializeGoal(goal) });
+router.post('/mine/:categoryId/cheer-squad', requireAuth, async (req, res, next) => {
+  try {
+    const { memberId } = req.body;
+    if (!memberId) return res.status(400).json({ error: 'memberId is required' });
+    const goal = await getOrCreateGoal(req.userId, req.params.categoryId);
+    await query('INSERT INTO cheer_squad (goal_id, member_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [goal.id, memberId]);
+    await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, 'squad_builder']);
+    res.status(201).json({ goal: await serializeGoal(goal) });
+  } catch (err) { next(err); }
 });
 
-router.get('/badges/mine', requireAuth, (req, res) => {
-  const all = db.prepare('SELECT * FROM badges').all();
-  const unlocked = new Set(db.prepare('SELECT badge_id FROM user_badges WHERE user_id = ?').all(req.userId).map(r => r.badge_id));
-  res.json({ badges: all.map(b => ({ id: b.id, name: b.name, icon: b.icon, unlocked: unlocked.has(b.id) })) });
+router.get('/badges/mine', requireAuth, async (req, res, next) => {
+  try {
+    const all = await query('SELECT * FROM badges');
+    const unlocked = await query('SELECT badge_id FROM user_badges WHERE user_id = $1', [req.userId]);
+    const unlockedSet = new Set(unlocked.rows.map(r => r.badge_id));
+    res.json({ badges: all.rows.map(b => ({ id: b.id, name: b.name, icon: b.icon, unlocked: unlockedSet.has(b.id) })) });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;
