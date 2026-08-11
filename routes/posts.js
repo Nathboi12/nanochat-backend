@@ -28,15 +28,17 @@ const mediaStorage = multer.diskStorage({
 });
 const uploadMedia = multer({
   storage: mediaStorage,
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 60 * 1024 * 1024 }, // 60MB — enough for short video clips
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image files are allowed'));
+    if (!file.mimetype.startsWith('image/') && !file.mimetype.startsWith('video/')) {
+      return cb(new Error('Only image or video files are allowed'));
+    }
     cb(null, true);
   },
 });
 router.post('/media', requireAuth, uploadMedia.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No image file uploaded (field name: file)' });
-  res.status(201).json({ url: `/uploads/${req.file.filename}` });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded (field name: file)' });
+  res.status(201).json({ url: `/uploads/${req.file.filename}`, mediaType: req.file.mimetype.startsWith('video/') ? 'video' : 'image' });
 });
 
 async function serializePost(row, userId) {
@@ -68,12 +70,23 @@ async function serializePost(row, userId) {
 
 router.get('/', async (req, res, next) => {
   try {
-    const mode = req.query.mode === 'normal' ? 'normal' : 'goal';
-    const { rows } = await query(
-      `SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id
-       WHERE p.profile_mode = $1 ORDER BY p.created_at DESC LIMIT 50`,
-      [mode]
-    );
+    const mode = req.query.mode;
+    const hashtag = (req.query.hashtag || '').replace(/^#/, '').trim();
+    let sql, params;
+    if (mode === 'foryou') {
+      // Discovery feed: real posts from anyone that have a photo/video attached, newest first
+      sql = `SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id WHERE p.media_url IS NOT NULL`;
+      params = [];
+      if (hashtag) { sql += ` AND p.body ILIKE $1`; params.push(`%#${hashtag}%`); }
+      sql += ` ORDER BY p.created_at DESC LIMIT 50`;
+    } else {
+      const feedMode = mode === 'normal' ? 'normal' : 'goal';
+      sql = `SELECT p.*, u.name, u.avatar_url FROM posts p JOIN users u ON u.id = p.user_id WHERE p.profile_mode = $1`;
+      params = [feedMode];
+      if (hashtag) { sql += ` AND p.body ILIKE $2`; params.push(`%#${hashtag}%`); }
+      sql += ` ORDER BY p.created_at DESC LIMIT 50`;
+    }
+    const { rows } = await query(sql, params);
     const posts = [];
     for (const row of rows) posts.push(await serializePost(row, req.userId));
     res.json({ posts });
@@ -109,6 +122,11 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 router.post('/:id/like', requireAuth, async (req, res, next) => {
   try {
     await query('INSERT INTO likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, req.userId]);
+    const { rows } = await query('SELECT user_id FROM posts WHERE id = $1', [req.params.id]);
+    if (rows[0]) {
+      const { createNotification } = require('./notifications');
+      await createNotification({ recipientId: rows[0].user_id, actorId: req.userId, type: 'like', postId: req.params.id });
+    }
     res.json({ liked: true });
   } catch (err) { next(err); }
 });
@@ -131,6 +149,11 @@ router.post('/:id/comments', requireAuth, async (req, res, next) => {
       [id]
     );
     const c = rows[0];
+    const postRows = await query('SELECT user_id FROM posts WHERE id = $1', [req.params.id]);
+    if (postRows.rows[0]) {
+      const { createNotification } = require('./notifications');
+      await createNotification({ recipientId: postRows.rows[0].user_id, actorId: req.userId, type: 'comment', postId: req.params.id });
+    }
     res.status(201).json({ comment: { id: c.id, text: c.text, createdAt: c.created_at, author: { id: c.user_id, name: c.name, avatarUrl: c.avatar_url } } });
   } catch (err) { next(err); }
 });
