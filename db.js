@@ -164,6 +164,18 @@ async function initSchema() {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK(type IN ('follow','like','comment')),
+      post_id TEXT,
+      read INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, created_at);
+
     CREATE INDEX IF NOT EXISTS idx_posts_mode ON posts(profile_mode, created_at);
     CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
