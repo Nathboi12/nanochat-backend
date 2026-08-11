@@ -86,6 +86,8 @@ router.post('/:id/follow', requireAuth, async (req, res, next) => {
   try {
     if (req.params.id === req.userId) return res.status(400).json({ error: "You can't follow yourself" });
     await query('INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, req.params.id]);
+    const { createNotification } = require('./notifications');
+    await createNotification({ recipientId: req.params.id, actorId: req.userId, type: 'follow' });
     res.json({ following: true });
   } catch (err) { next(err); }
 });
@@ -93,6 +95,26 @@ router.delete('/:id/follow', requireAuth, async (req, res, next) => {
   try {
     await query('DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2', [req.userId, req.params.id]);
     res.json({ following: false });
+  } catch (err) { next(err); }
+});
+
+// Real followers/following lists (not just counts)
+router.get('/:id/followers', async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT u.id, u.name, u.bio, u.avatar_url FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followee_id = $1 ORDER BY f.created_at DESC`,
+      [req.params.id]
+    );
+    res.json({ users: rows.map(r => ({ id: r.id, name: r.name, bio: r.bio, avatarUrl: r.avatar_url })) });
+  } catch (err) { next(err); }
+});
+router.get('/:id/following', async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT u.id, u.name, u.bio, u.avatar_url FROM follows f JOIN users u ON u.id = f.followee_id WHERE f.follower_id = $1 ORDER BY f.created_at DESC`,
+      [req.params.id]
+    );
+    res.json({ users: rows.map(r => ({ id: r.id, name: r.name, bio: r.bio, avatarUrl: r.avatar_url })) });
   } catch (err) { next(err); }
 });
 
