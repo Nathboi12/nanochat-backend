@@ -46,6 +46,9 @@ async function initSchema() {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       category_id TEXT NOT NULL REFERENCES goal_categories(id) ON DELETE CASCADE,
+      description TEXT DEFAULT '',
+      target_date TIMESTAMP,
+      visibility TEXT DEFAULT 'public' CHECK(visibility IN ('public','followers','private')),
       progress INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, category_id)
@@ -55,6 +58,8 @@ async function initSchema() {
       id TEXT PRIMARY KEY,
       goal_id TEXT NOT NULL REFERENCES user_goals(id) ON DELETE CASCADE,
       label TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      target_date TIMESTAMP,
       done INTEGER DEFAULT 0,
       position INTEGER DEFAULT 0
     );
@@ -179,6 +184,16 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_posts_mode ON posts(profile_mode, created_at);
     CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+  `);
+
+  // Migrate already-existing tables (CREATE TABLE IF NOT EXISTS above won't add
+  // new columns to a table that already exists from before this update).
+  await pool.query(`
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS target_date TIMESTAMP;
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'public';
+    ALTER TABLE milestones ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+    ALTER TABLE milestones ADD COLUMN IF NOT EXISTS target_date TIMESTAMP;
   `);
 
   const catCount = await pool.query('SELECT COUNT(*) c FROM goal_categories');
