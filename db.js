@@ -8,6 +8,12 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false,
+  max: 10,                       // cap connections so we never exhaust the free-tier Postgres limit
+  idleTimeoutMillis: 30000,      // close idle connections instead of leaving them open across redeploys
+  connectionTimeoutMillis: 10000, // fail fast if the database can't be reached, instead of hanging forever
+});
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client', err);
 });
 
 async function query(text, params) {
