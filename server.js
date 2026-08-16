@@ -15,6 +15,7 @@ const goalRoutes = require('./routes/goals');
 const messageRoutes = require('./routes/messages');
 const liveRoutes = require('./routes/live');
 const { router: notificationRoutes } = require('./routes/notifications');
+const nanoRoutes = require('./routes/nano');
 
 const app = express();
 
@@ -70,6 +71,7 @@ app.use('/goals', goalRoutes);
 app.use('/conversations', messageRoutes);
 app.use('/live', liveRoutes);
 app.use('/notifications', notificationRoutes);
+app.use('/nano', nanoRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, next) => {
