@@ -32,8 +32,8 @@ const uploadMedia = multer({
   storage: mediaStorage,
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB — large enough for a short clip, small enough not to stall on mobile data
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/') && !file.mimetype.startsWith('video/')) {
-      return cb(new Error('Only image or video files are allowed'));
+    if (!file.mimetype.startsWith('image/') && !file.mimetype.startsWith('video/') && !file.mimetype.startsWith('audio/')) {
+      return cb(new Error('Only image, video, or audio files are allowed'));
     }
     cb(null, true);
   },
