@@ -1,4 +1,4 @@
-const { Pool } = require('pg');
+ const { Pool } = require('pg');
 require('dotenv').config();
 
 if (!process.env.DATABASE_URL) {
@@ -200,6 +200,12 @@ async function initSchema() {
     ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'public';
     ALTER TABLE milestones ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
     ALTER TABLE milestones ADD COLUMN IF NOT EXISTS target_date TIMESTAMP;
+  `);
+
+  // Allow 'voice' as a message type (original schema only allowed text/gif/sticker)
+  await pool.query(`
+    ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_type_check;
+    ALTER TABLE messages ADD CONSTRAINT messages_type_check CHECK (type IN ('text','gif','sticker','voice'));
   `);
 
   const catCount = await pool.query('SELECT COUNT(*) c FROM goal_categories');
