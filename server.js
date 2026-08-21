@@ -13,7 +13,6 @@ const userRoutes = require('./routes/users');
 const postRoutes = require('./routes/posts');
 const goalRoutes = require('./routes/goals');
 const messageRoutes = require('./routes/messages');
-const liveRoutes = require('./routes/live');
 const { router: notificationRoutes } = require('./routes/notifications');
 const nanoRoutes = require('./routes/nano');
 
@@ -69,7 +68,6 @@ app.use('/users', userRoutes);
 app.use('/posts', postRoutes);
 app.use('/goals', goalRoutes);
 app.use('/conversations', messageRoutes);
-app.use('/live', liveRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/nano', nanoRoutes);
 
