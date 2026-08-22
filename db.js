@@ -1,4 +1,4 @@
- const { Pool } = require('pg');
+  const { Pool } = require('pg');
 require('dotenv').config();
 
 if (!process.env.DATABASE_URL) {
@@ -179,13 +179,25 @@ async function initSchema() {
       id TEXT PRIMARY KEY,
       recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      type TEXT NOT NULL CHECK(type IN ('follow','like','comment')),
+      type TEXT NOT NULL CHECK(type IN ('follow','like','comment','partner_request','partner_accept','goal_reminder')),
       post_id TEXT,
       read INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS accountability_partners (
+      id TEXT PRIMARY KEY,
+      requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category_id TEXT REFERENCES goal_categories(id) ON DELETE CASCADE,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','active','declined','ended')),
+      created_at TIMESTAMP DEFAULT NOW(),
+      responded_at TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_partners_requester ON accountability_partners(requester_id, status);
+    CREATE INDEX IF NOT EXISTS idx_partners_recipient ON accountability_partners(recipient_id, status);
 
     CREATE INDEX IF NOT EXISTS idx_posts_mode ON posts(profile_mode, created_at);
     CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, created_at);
@@ -206,6 +218,12 @@ async function initSchema() {
   await pool.query(`
     ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_type_check;
     ALTER TABLE messages ADD CONSTRAINT messages_type_check CHECK (type IN ('text','gif','sticker','voice'));
+  `);
+
+  // Allow accountability-partner notification types (original schema only allowed follow/like/comment)
+  await pool.query(`
+    ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
+    ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (type IN ('follow','like','comment','partner_request','partner_accept','goal_reminder'));
   `);
 
   const catCount = await pool.query('SELECT COUNT(*) c FROM goal_categories');
