@@ -1,4 +1,4 @@
-require('dotenv').config();
+ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -15,6 +15,7 @@ const goalRoutes = require('./routes/goals');
 const messageRoutes = require('./routes/messages');
 const { router: notificationRoutes } = require('./routes/notifications');
 const nanoRoutes = require('./routes/nano');
+const partnerRoutes = require('./routes/partners');
 
 const app = express();
 
@@ -58,7 +59,7 @@ function rateLimit({ windowMs = 15 * 60 * 1000, max = 20 } = {}) {
   };
 }
 
-app.get('/health', (req, res) => res.json({ ok: true, service: 'nanochat-backend' }));
+app.get('/health', (req, res) => res.json({ ok: true, service: 'goalchat-backend' }));
 
 app.use('/auth/signup', rateLimit({ max: 10 }));
 app.use('/auth/login', rateLimit({ max: 20 }));
@@ -70,6 +71,7 @@ app.use('/goals', goalRoutes);
 app.use('/conversations', messageRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/nano', nanoRoutes);
+app.use('/partners', partnerRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, next) => {
@@ -88,7 +90,7 @@ const PORT = process.env.PORT || 4000;
 
 initSchema()
   .then(() => {
-    app.listen(PORT, () => console.log(`Nanochat backend listening on port ${PORT}`));
+    app.listen(PORT, () => console.log(`GoalChat backend listening on port ${PORT}`));
   })
   .catch(err => {
     console.error('FATAL: could not initialize database schema.', err);
