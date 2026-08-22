@@ -1,7 +1,7 @@
 {
-  "name": "nanochat-backend",
+  "name": "goalchat-backend",
   "version": "1.0.0",
-  "description": "Backend API for Nanochat — dual-profile social app with goals, feed, messaging, and live",
+  "description": "Backend API for GoalChat — an AI-powered goal accountability platform",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -22,3 +22,5 @@
     "node": "20.x"
   }
 }
+
+ 
