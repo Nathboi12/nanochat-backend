@@ -81,6 +81,8 @@ router.patch('/:id/accept', requireAuth, async (req, res, next) => {
     if (p.recipient_id !== req.userId) return res.status(403).json({ error: 'Not your request to respond to' });
     await query("UPDATE accountability_partners SET status = 'active', responded_at = NOW() WHERE id = $1", [p.id]);
     await createNotification({ recipientId: p.requester_id, actorId: req.userId, type: 'partner_accept' });
+    await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [p.requester_id, 'first_partner']);
+    await query('INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, 'first_partner']);
     res.json({ status: 'active' });
   } catch (err) { next(err); }
 });
@@ -116,12 +118,17 @@ router.get('/:id/goal', requireAuth, async (req, res, next) => {
     if (!p.category_id) return res.status(400).json({ error: 'This partnership is not tied to a specific goal category' });
 
     const otherId = p.requester_id === req.userId ? p.recipient_id : p.requester_id;
-    const goalRes = await query('SELECT * FROM user_goals WHERE user_id = $1 AND category_id = $2', [otherId, p.category_id]);
+    // Custom goals mean a person can have several goals tagged with the same category —
+    // show their most recently created active one in that category.
+    const goalRes = await query(
+      `SELECT * FROM user_goals WHERE user_id = $1 AND category_id = $2 AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
+      [otherId, p.category_id]
+    );
     if (!goalRes.rows[0]) return res.json({ goal: null });
     const goal = goalRes.rows[0];
     const msRes = await query('SELECT done FROM milestones WHERE goal_id = $1', [goal.id]);
     const total = msRes.rows.length, done = msRes.rows.filter(m => m.done).length;
-    res.json({ goal: { progress: goal.progress, totalMilestones: total, doneMilestones: done } });
+    res.json({ goal: { id: goal.id, title: goal.title, progress: goal.progress, totalMilestones: total, doneMilestones: done } });
   } catch (err) { next(err); }
 });
 
