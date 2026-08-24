@@ -1,4 +1,4 @@
-  const { Pool } = require('pg');
+ const { Pool } = require('pg');
 require('dotenv').config();
 
 if (!process.env.DATABASE_URL) {
@@ -51,13 +51,16 @@ async function initSchema() {
     CREATE TABLE IF NOT EXISTS user_goals (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      category_id TEXT NOT NULL REFERENCES goal_categories(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT 'Untitled Goal',
+      category_id TEXT REFERENCES goal_categories(id) ON DELETE SET NULL,
       description TEXT DEFAULT '',
+      difficulty TEXT DEFAULT '',
+      available_time TEXT DEFAULT '',
+      status TEXT DEFAULT 'active' CHECK(status IN ('active','completed','archived')),
       target_date TIMESTAMP,
       visibility TEXT DEFAULT 'public' CHECK(visibility IN ('public','followers','private')),
       progress INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(user_id, category_id)
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS milestones (
@@ -68,6 +71,17 @@ async function initSchema() {
       target_date TIMESTAMP,
       done INTEGER DEFAULT 0,
       position INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      milestone_id TEXT NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      estimated_minutes INTEGER,
+      done INTEGER DEFAULT 0,
+      position INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS checkins (
@@ -214,6 +228,31 @@ async function initSchema() {
     ALTER TABLE milestones ADD COLUMN IF NOT EXISTS target_date TIMESTAMP;
   `);
 
+  // BREAKING CHANGE MIGRATION: move from "6 fixed categories, one goal each" to
+  // real custom goals (title, difficulty, available_time, status), unlimited per user.
+  await pool.query(`
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS title TEXT;
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS difficulty TEXT DEFAULT '';
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS available_time TEXT DEFAULT '';
+    ALTER TABLE user_goals ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+  `);
+  // Backfill titles for any pre-existing goals (created before "title" existed) using their category name
+  await pool.query(`
+    UPDATE user_goals ug SET title = gc.name
+    FROM goal_categories gc WHERE ug.category_id = gc.id AND (ug.title IS NULL OR ug.title = '');
+  `);
+  await pool.query(`UPDATE user_goals SET title = 'Untitled Goal' WHERE title IS NULL OR title = '';`);
+  await pool.query(`ALTER TABLE user_goals ALTER COLUMN title SET NOT NULL;`);
+  // Remove the old "one goal per category" constraint and the required-category rule —
+  // users can now have any number of custom goals, with category as an optional tag.
+  await pool.query(`
+    ALTER TABLE user_goals DROP CONSTRAINT IF EXISTS user_goals_user_id_category_id_key;
+    ALTER TABLE user_goals ALTER COLUMN category_id DROP NOT NULL;
+  `);
+
+  // Tasks live under milestones (new granular level for "Today's Action")
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestone_id, position);`);
+
   // Allow 'voice' as a message type (original schema only allowed text/gif/sticker)
   await pool.query(`
     ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_type_check;
@@ -234,19 +273,20 @@ async function initSchema() {
     }
   }
 
-  const badgeCount = await pool.query('SELECT COUNT(*) c FROM badges');
-  if (Number(badgeCount.rows[0].c) === 0) {
-    const badges = [
-      ['streak_12', '12-Day Streak', '🔥'],
-      ['first_milestone', 'First Milestone', '🏁'],
-      ['squad_builder', 'Squad Builder', '🤝'],
-      ['checkins_100', '100 Check-ins', '💯'],
-      ['goal_crusher', 'Goal Crusher', '🚀'],
-      ['streak_30', '30-Day Streak', '🌙'],
-    ];
-    for (const [id, name, icon] of badges) {
-      await pool.query('INSERT INTO badges (id, name, icon) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [id, name, icon]);
-    }
+  // Always try to seed badges (ON CONFLICT DO NOTHING makes this safe to re-run,
+  // so new badges added later still reach databases that already have some badges).
+  const badges = [
+    ['streak_12', '12-Day Streak', '🔥'],
+    ['first_milestone', 'First Milestone', '🏁'],
+    ['squad_builder', 'Squad Builder', '🤝'],
+    ['checkins_100', '100 Check-ins', '💯'],
+    ['goal_crusher', 'Goal Crusher', '🚀'],
+    ['streak_30', '30-Day Streak', '🌙'],
+    ['first_goal', 'First Goal Created', '🎯'],
+    ['first_partner', 'First Accountability Partner', '🤝'],
+  ];
+  for (const [id, name, icon] of badges) {
+    await pool.query('INSERT INTO badges (id, name, icon) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [id, name, icon]);
   }
 }
 
