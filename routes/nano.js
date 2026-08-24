@@ -33,18 +33,17 @@ router.post('/chat', requireAuth, async (req, res, next) => {
     const userRes = await query('SELECT name, goal_streak, normal_streak, score FROM users WHERE id = $1', [req.userId]);
     const user = userRes.rows[0];
     const goalsRes = await query(
-      `SELECT gc.name as category, ug.progress,
+      `SELECT ug.title, ug.progress, ug.status,
               (SELECT COUNT(*) FROM milestones m WHERE m.goal_id = ug.id) as total_ms,
               (SELECT COUNT(*) FROM milestones m WHERE m.goal_id = ug.id AND m.done = 1) as done_ms
-       FROM user_goals ug JOIN goal_categories gc ON gc.id = ug.category_id
-       WHERE ug.user_id = $1`,
+       FROM user_goals ug WHERE ug.user_id = $1 AND ug.status = 'active'`,
       [req.userId]
     );
     const goalsSummary = goalsRes.rows.length
-      ? goalsRes.rows.map(g => `${g.category}: ${g.progress}% (${g.done_ms}/${g.total_ms} milestones)`).join('; ')
-      : 'No goals started yet';
+      ? goalsRes.rows.map(g => `"${g.title}": ${g.progress}% (${g.done_ms}/${g.total_ms} milestones)`).join('; ')
+      : 'No active goals yet';
 
-    const contextBlock = `User's real GoalChat data — Name: ${user?.name || 'there'}, Goal streak: ${user?.goal_streak || 0} days, Score: ${user?.score || 0}. Goals: ${goalsSummary}.`;
+    const contextBlock = `User's real GoalChat data — Name: ${user?.name || 'there'}, Goal streak: ${user?.goal_streak || 0} days, Score: ${user?.score || 0}. Active goals: ${goalsSummary}.`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -78,3 +77,5 @@ router.post('/chat', requireAuth, async (req, res, next) => {
 });
 
 module.exports = router;
+
+  
